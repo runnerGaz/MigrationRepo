@@ -1,0 +1,86 @@
+name: Enterprise App Migration Lifecycle
+
+on:
+  workflow_dispatch:
+    inputs:
+      migration_step:
+        description: 'Select the Migration Phase to Execute'
+        required: true
+        default: '1_maintenance_and_backup'
+        type: choice
+        options:
+          - '1_maintenance_and_backup'
+          - '2_deploy_to_target'
+          - '3_cutover_to_target'
+          - 'rollback_to_source'
+
+jobs:
+  maintenance-and-backup:
+    if: ${{ github.event.inputs.migration_step == '1_maintenance_and_backup' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # 1. Simulate Maintenance Window by deploying a banner to Source
+      - name: Deploy Maintenance Banner to Source App
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: 'yourname-source-app' # Replace with your source app name
+          publish-profile: ${{ secrets.AZURE_SOURCE_PUBLISH_PROFILE }}
+          package: './maintenance-page-dir' # A folder containing a simple maintenance.html
+
+      # 2. Simulate Code Backup 
+      - name: Create Deployment Artifact Backup
+        run: |
+          mkdir -p ./backup
+          tar -czf ./backup/migration-backup-${{ github.run_id }}.tar.gz ./*
+          echo "Application backup created successfully."
+          
+      - name: Upload Backup Artifact to GitHub
+        uses: actions/upload-artifact@v4
+        with:
+          name: source-app-backup
+          path: ./backup/
+
+  deploy-to-target:
+    if: ${{ github.event.inputs.migration_step == '2_deploy_to_target' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # 3. Deploy the application to the new Target destination
+      - name: Deploy Production Code to Target App Service
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: 'yourname-target-app' # Replace with your target app name
+          publish-profile: ${{ secrets.AZURE_TARGET_PUBLISH_PROFILE }}
+          package: '.' # Deploys the main application code
+
+  cutover-traffic:
+    if: ${{ github.event.inputs.migration_step == '3_cutover_to_target' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Finalize Cutover Notice
+        run: |
+          echo "Traffic Cutover Complete."
+          echo "In a production environment, this step modifies DNS records (e.g., Azure Traffic Manager, Front Door, or GoDaddy CNAME) to point to the Target App Service."
+
+  rollback:
+    if: ${{ github.event.inputs.migration_step == 'rollback_to_source' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Previous Backup
+        uses: actions/download-artifact@v4
+        with:
+          name: source-app-backup
+          path: ./restored-code
+
+      # 4. Rollback execution: redeploying the backup to the source to restore original state
+      - name: Rollback - Restore Original Code to Source App
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: 'yourname-source-app'
+          publish-profile: ${{ secrets.AZURE_SOURCE_PUBLISH_PROFILE }}
+          package: './restored-code'
