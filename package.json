@@ -1,0 +1,9 @@
+{
+  "name": "azure-migration-lab",
+  "version": "1.0.0",
+  "description": "Simple app for Azure migration lab",
+  "main": "index.html",
+  "scripts": {
+    "start": "npx serve -s ."
+  }
+}
