@@ -26,7 +26,7 @@ jobs:
       - name: Deploy Maintenance Banner to Source App
         uses: azure/webapps-deploy@v3
         with:
-          app-name: 'yourname-source-app' # Replace with your source app name
+          app-name: 'Div173-source-app' # Replace with your source app name
           publish-profile: ${{ secrets.AZURE_SOURCE_PUBLISH_PROFILE }}
           package: './maintenance-page-dir' # A folder containing a simple maintenance.html
 
@@ -54,7 +54,7 @@ jobs:
       - name: Deploy Production Code to Target App Service
         uses: azure/webapps-deploy@v3
         with:
-          app-name: 'yourname-target-app' # Replace with your target app name
+          app-name: 'Div173-target-app' # Replace with your target app name
           publish-profile: ${{ secrets.AZURE_TARGET_PUBLISH_PROFILE }}
           package: '.' # Deploys the main application code
 
