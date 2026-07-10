@@ -1,0 +1,62 @@
+name: AWS Server-to-Server Retract and Migrate
+
+on:
+  workflow_dispatch:
+
+jobs:
+  aws-migration:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure SSH Key Authentication
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.AWS_PRIVATE_KEY }}" > ~/.ssh/migration_key
+          chmod 600 ~/.ssh/migration_key
+
+      # ==========================================================
+      # 1. RETRACT CODE FROM AWS SOURCE EC2
+      # ==========================================================
+      - name: Retract Dashboard Code from Source EC2
+        run: |
+          echo "=== PULLING LIVE FLUID CODE FROM SOURCE ==="
+          ssh -i ~/.ssh/migration_key -o StrictHostKeyChecking=no ubuntu@${{ secrets.AWS_SOURCE_IP }} "tar -czf /tmp/source_site.tar.gz -C /home/ubuntu/app ."
+          scp -i ~/.ssh/migration_key -o StrictHostKeyChecking=no ubuntu@${{ secrets.AWS_SOURCE_IP }}:/tmp/source_site.tar.gz ./source_site.tar.gz
+
+      # ==========================================================
+      # 2. TRANSFORMATION STEP
+      # ==========================================================
+      - name: Transform Code Context for Target Environment
+        run: |
+          mkdir -p ./staged_app
+          tar -xzf ./source_site.tar.gz -C ./staged_app
+          
+          # Dynamically rewrite the text layout markers and themes
+          sed -i 's/● Live on Source VM/● Migrated to AWS Target EC2/g' ./staged_app/index.html
+          sed -i 's/from-blue-400 to-emerald-400/from-emerald-400 to-purple-500/g' ./staged_app/index.html
+          
+          tar -czf ./final_payload.tar.gz -C ./staged_app .
+
+      # ==========================================================
+      # 3. MIGRATE TO TARGET EC2
+      # ==========================================================
+      - name: Push and Deploy Payload to Target EC2
+        run: |
+          echo "=== PUSHING AND EXTRACTING ON TARGET ==="
+          scp -i ~/.ssh/migration_key -o StrictHostKeyChecking=no ./final_payload.tar.gz ubuntu@${{ secrets.AWS_TARGET_IP }}:/tmp/final_payload.tar.gz
+          
+          ssh -i ~/.ssh/migration_key -o StrictHostKeyChecking=no ubuntu@${{ secrets.AWS_TARGET_IP }} "
+            mkdir -p /home/ubuntu/app
+            sudo tar -xzf /tmp/final_payload.tar.gz -C /home/ubuntu/app/
+            sudo kill -9 \$(sudo lsof -t -i:80) 2>/dev/null || true
+            cd /home/ubuntu/app
+            sudo nohup node server.js > /tmp/node-app.log 2>&1 &
+          "
+
+      # ==========================================================
+      # 4. TARGET PIPELINE VERIFICATION LOG
+      # ==========================================================
+      - name: Verify Live Cloned App on Target EC2
+        run: |
+          echo "=== RETRIEVING LIVE DEPLOYED TELEMETRY ==="
+          sleep 3
+          ssh -i ~/.ssh/migration_key -o StrictHostKeyChecking=no ubuntu@${{ secrets.AWS_TARGET_IP }} "curl -s http://localhost" | grep -E "ProjectAlpha|Migrated"
