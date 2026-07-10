@@ -8,9 +8,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Configure SSH Key Authentication
+        env:
+          VM_SSH_KEY: ${{ secrets.VM_SSH_KEY }}
         run: |
           mkdir -p ~/.ssh
-          echo "${{ secrets.VM_SSH_KEY }}" > ~/.ssh/migration_key
+          echo "$VM_SSH_KEY" > ~/.ssh/migration_key
           chmod 600 ~/.ssh/migration_key
 
       # ==========================================================
