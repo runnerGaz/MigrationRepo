@@ -1,0 +1,62 @@
+name: Server-to-Server Retract and Migrate Lifecycle
+
+on:
+  workflow_dispatch:
+
+jobs:
+  pull-and-push-migration:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure SSH Key Authentication
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.VM_SSH_KEY }}" > ~/.ssh/migration_key
+          chmod 600 ~/.ssh/migration_key
+
+      # ==========================================================
+      # 1. VERIFY LIVE WEBSITE ON SOURCE VM
+      # ==========================================================
+      - name: Verify Current Source App Telemetry
+        run: |
+          echo "=== RETRIEVING LIVE APP STATE FROM SOURCE VM ==="
+          ssh -i ~/.ssh/migration_key -o StrictHostKeyChecking=no azureuser@${{ secrets.SOURCE_VM_IP }} "curl -s http://localhost" | grep -E "title|h1|Live on Source VM"
+
+      # ==========================================================
+      # 2. RETRACT CODE FROM SOURCE VM
+      # ==========================================================
+      - name: Retract Live Application Files
+        run: |
+          ssh -i ~/.ssh/migration_key -o StrictHostKeyChecking=no azureuser@${{ secrets.SOURCE_VM_IP }} "tar -czf /tmp/retracted_source_site.tar.gz -C /home/azureuser/app ."
+          scp -i ~/.ssh/migration_key -o StrictHostKeyChecking=no azureuser@${{ secrets.SOURCE_VM_IP }}:/tmp/retracted_source_site.tar.gz ./retracted_source_site.tar.gz
+
+      # ==========================================================
+      # 3. TRANSFORMATION STEP
+      # ==========================================================
+      - name: Unpack and Adjust Code for Target Environment
+        run: |
+          mkdir -p ./staged_app
+          tar -xzf ./retracted_source_site.tar.gz -C ./staged_app
+          
+          # Dynamically rewrite the text layout markers
+          sed -i 's/● Live on Source VM/● Migrated to Target VM/g' ./staged_app/index.html
+          sed -i 's/from-blue-400 to-emerald-400/from-emerald-400 to-purple-500/g' ./staged_app/index.html
+          
+          tar -czf ./final_migration_payload.tar.gz -C ./staged_app .
+
+      # ==========================================================
+      # 4. MIGRATE CODE TO TARGET VM
+      # ==========================================================
+      - name: Push and Deploy Payload to Target VM
+        run: |
+          scp -i ~/.ssh/migration_key -o StrictHostKeyChecking=no ./final_migration_payload.tar.gz azureuser@${{ secrets.TARGET_VM_IP }}:/tmp/final_migration_payload.tar.gz
+          ssh -i ~/.ssh/migration_key -o StrictHostKeyChecking=no azureuser@${{ secrets.TARGET_VM_IP }} "tar -xzf /tmp/final_migration_payload.tar.gz -C /home/azureuser/app/"
+
+      # ==========================================================
+      # 5. TARGET PIPELINE VERIFICATION
+      # ==========================================================
+      - name: Verify Live Cloned App on Target VM
+        run: |
+          echo "=== RETRIEVING DEPLOYED STATE FROM TARGET VM ==="
+          # Sleep to let the files extract safely
+          sleep 3
+          ssh -i ~/.ssh/migration_key -o StrictHostKeyChecking=no azureuser@${{ secrets.TARGET_VM_IP }} "curl -s http://localhost" | grep -E "title|h1|Migrated to Target VM"
