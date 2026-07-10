@@ -50,10 +50,16 @@ jobs:
       # ==========================================================
       - name: Push and Deploy Payload to Target VM
         run: |
-          # Fixed the path layout by adding the missing colon (:) after the IP variable
+          # 1. Upload the archive to the safe public staging area (/tmp)
           scp -i ~/.ssh/migration_key -o StrictHostKeyChecking=no ./final_migration_payload.tar.gz azureuser@${{ secrets.TARGET_VM_IP }}:/tmp/final_migration_payload.tar.gz
           
-          ssh -i ~/.ssh/migration_key -o StrictHostKeyChecking=no azureuser@${{ secrets.TARGET_VM_IP }} "tar -xzf /tmp/final_migration_payload.tar.gz -C /home/azureuser/app/"
+          # 2. Extract with sudo to bypass permission blocks, then kill and reboot the Node app to apply changes
+          ssh -i ~/.ssh/migration_key -o StrictHostKeyChecking=no azureuser@${{ secrets.TARGET_VM_IP }} "
+            sudo tar -xzf /tmp/final_migration_payload.tar.gz -C /home/azureuser/app/ && \
+            sudo kill -9 \$(sudo lsof -t -i:80) 2>/dev/null || true && \
+            cd /home/azureuser/app && \
+            sudo nohup node server.js > /tmp/node-app.log 2>&1 &
+          "
       # ==========================================================
       # 5. TARGET PIPELINE VERIFICATION
       # ==========================================================
