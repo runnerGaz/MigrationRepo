@@ -9,8 +9,8 @@ jobs:
     timeout-minutes: 20
 
     env:
-      SOURCE_VM_USER: azureuser
-      TARGET_VM_USER: azureuser
+      azureuser: azureuser
+      azureuser: azureuser
       SOURCE_VM_IP: ${{ secrets.SOURCE_VM_IP }}
       TARGET_VM_IP: ${{ secrets.TARGET_VM_IP }}
 
@@ -65,7 +65,7 @@ jobs:
             -i ~/.ssh/source_key \
             -o StrictHostKeyChecking=no \
             -o ConnectTimeout=15 \
-            "$SOURCE_VM_USER@$SOURCE_VM_IP" \
+            "$azureuser@$SOURCE_VM_IP" \
             "echo 'Successfully connected to source VM'"
 
       - name: Test target VM connection
@@ -74,7 +74,7 @@ jobs:
             -i ~/.ssh/target_key \
             -o StrictHostKeyChecking=no \
             -o ConnectTimeout=15 \
-            "$TARGET_VM_USER@$TARGET_VM_IP" \
+            "$azureuser@$TARGET_VM_IP" \
             "echo 'Successfully connected to target VM'"
 
       - name: Create archive on source VM
@@ -82,11 +82,11 @@ jobs:
           ssh \
             -i ~/.ssh/source_key \
             -o StrictHostKeyChecking=no \
-            "$SOURCE_VM_USER@$SOURCE_VM_IP" \
+            "$azureuser@$SOURCE_VM_IP" \
             "sudo test -d /var/www/html &&
              sudo rm -f /tmp/nginx-site.tar.gz &&
              sudo tar -czf /tmp/nginx-site.tar.gz -C /var/www html &&
-             sudo chown $SOURCE_VM_USER:$SOURCE_VM_USER /tmp/nginx-site.tar.gz &&
+             sudo chown $azureuser:$azureuser /tmp/nginx-site.tar.gz &&
              ls -lh /tmp/nginx-site.tar.gz"
 
       - name: Download archive from source VM
@@ -94,7 +94,7 @@ jobs:
           scp \
             -i ~/.ssh/source_key \
             -o StrictHostKeyChecking=no \
-            "$SOURCE_VM_USER@$SOURCE_VM_IP:/tmp/nginx-site.tar.gz" \
+            "$azureuser@$SOURCE_VM_IP:/tmp/nginx-site.tar.gz" \
             ./nginx-site.tar.gz
 
           test -s ./nginx-site.tar.gz
@@ -106,14 +106,14 @@ jobs:
             -i ~/.ssh/target_key \
             -o StrictHostKeyChecking=no \
             ./nginx-site.tar.gz \
-            "$TARGET_VM_USER@$TARGET_VM_IP:/tmp/nginx-site.tar.gz"
+            "$azureuser@$TARGET_VM_IP:/tmp/nginx-site.tar.gz"
 
       - name: Install Nginx and deploy application
         run: |
           ssh \
             -i ~/.ssh/target_key \
             -o StrictHostKeyChecking=no \
-            "$TARGET_VM_USER@$TARGET_VM_IP" << 'EOF'
+            "$azureuser@$TARGET_VM_IP" << 'EOF'
           set -e
 
           export DEBIAN_FRONTEND=noninteractive
@@ -174,14 +174,14 @@ jobs:
             -i ~/.ssh/source_key \
             -o StrictHostKeyChecking=no \
             -o ConnectTimeout=5 \
-            "$SOURCE_VM_USER@$SOURCE_VM_IP" \
+            "$azureuser@$SOURCE_VM_IP" \
             "sudo rm -f /tmp/nginx-site.tar.gz" 2>/dev/null || true
 
           ssh \
             -i ~/.ssh/target_key \
             -o StrictHostKeyChecking=no \
             -o ConnectTimeout=5 \
-            "$TARGET_VM_USER@$TARGET_VM_IP" \
+            "$azureuser@$TARGET_VM_IP" \
             "sudo rm -f /tmp/nginx-site.tar.gz" 2>/dev/null || true
 
           rm -f ./nginx-site.tar.gz
