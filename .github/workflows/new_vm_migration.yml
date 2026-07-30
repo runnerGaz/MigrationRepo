@@ -1,1 +1,64 @@
+name: Migrate Application
 
+on:
+  workflow_dispatch:
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Configure SSH Keys
+        run: |
+          mkdir -p ~/.ssh
+
+          echo "${{ secrets.SOURCE_VM_SSH_KEY }}" > ~/.ssh/source_key
+          chmod 600 ~/.ssh/source_key
+
+          echo "${{ secrets.TARGET_VM_SSH_KEY }}" > ~/.ssh/target_key
+          chmod 600 ~/.ssh/target_key
+
+      - name: Create backup on Source VM
+        run: |
+          ssh -i ~/.ssh/source_key \
+          -o StrictHostKeyChecking=no \
+          root@${{ vars.SOURCE_VM_IP }} \
+          "tar -czf /tmp/nginx-site.tar.gz /var/www/html"
+
+      - name: Download backup from Source VM
+        run: |
+          scp -i ~/.ssh/source_key \
+          -o StrictHostKeyChecking=no \
+          root@${{ vars.SOURCE_VM_IP }}:/tmp/nginx-site.tar.gz \
+          ./nginx-site.tar.gz
+
+      - name: Upload backup to Target VM
+        run: |
+          scp -i ~/.ssh/target_key \
+          -o StrictHostKeyChecking=no \
+          ./nginx-site.tar.gz \
+          root@${{ vars.TARGET_VM_IP }}:/tmp/
+
+      - name: Deploy on Target VM
+        run: |
+          ssh -i ~/.ssh/target_key \
+          -o StrictHostKeyChecking=no \
+          root@${{ vars.TARGET_VM_IP }} << EOF
+
+          apt-get update
+
+          if ! dpkg -s nginx >/dev/null 2>&1; then
+            apt-get install -y nginx
+          fi
+
+          rm -rf /var/www/html/*
+          tar -xzf /tmp/nginx-site.tar.gz -C /
+
+          systemctl enable nginx
+          systemctl restart nginx
+
+          EOF
+
+      - name: Validate Deployment
+        run: |
+          curl http://${{ vars.TARGET_VM_IP }}
