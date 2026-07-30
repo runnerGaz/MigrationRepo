@@ -9,124 +9,148 @@ jobs:
     timeout-minutes: 20
 
     env:
+      SOURCE_VM_USER: azureuser
+      TARGET_VM_USER: azureuser
       SOURCE_VM_IP: ${{ secrets.SOURCE_VM_IP }}
       TARGET_VM_IP: ${{ secrets.TARGET_VM_IP }}
 
     steps:
-      - name: Validate secrets
+      - name: Validate required secrets
         env:
           SOURCE_VM_SSH_KEY: ${{ secrets.SOURCE_VM_SSH_KEY }}
           TARGET_VM_SSH_KEY: ${{ secrets.TARGET_VM_SSH_KEY }}
         run: |
-          [ -n "$SOURCE_VM_IP" ] || {
+          set -e
+
+          if [ -z "$SOURCE_VM_IP" ]; then
             echo "SOURCE_VM_IP secret is missing"
             exit 1
-          }
+          fi
 
-          [ -n "$TARGET_VM_IP" ] || {
+          if [ -z "$TARGET_VM_IP" ]; then
             echo "TARGET_VM_IP secret is missing"
             exit 1
-          }
+          fi
 
-          [ -n "$SOURCE_VM_SSH_KEY" ] || {
+          if [ -z "$SOURCE_VM_SSH_KEY" ]; then
             echo "SOURCE_VM_SSH_KEY secret is missing"
             exit 1
-          }
+          fi
 
-          [ -n "$TARGET_VM_SSH_KEY" ] || {
+          if [ -z "$TARGET_VM_SSH_KEY" ]; then
             echo "TARGET_VM_SSH_KEY secret is missing"
             exit 1
-          }
+          fi
 
-          echo "All required secrets are configured."
+          echo "All required secrets are available."
 
       - name: Configure SSH keys
         env:
           SOURCE_VM_SSH_KEY: ${{ secrets.SOURCE_VM_SSH_KEY }}
           TARGET_VM_SSH_KEY: ${{ secrets.TARGET_VM_SSH_KEY }}
         run: |
+          set -e
+
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
 
-          printf '%s\n' "$SOURCE_VM_SSH_KEY" |
-            tr -d '\r' > ~/.ssh/source_key
+          printf '%s\n' "$SOURCE_VM_SSH_KEY" \
+            | tr -d '\r' > ~/.ssh/source_key
 
-          printf '%s\n' "$TARGET_VM_SSH_KEY" |
-            tr -d '\r' > ~/.ssh/target_key
+          printf '%s\n' "$TARGET_VM_SSH_KEY" \
+            | tr -d '\r' > ~/.ssh/target_key
 
           chmod 600 ~/.ssh/source_key
           chmod 600 ~/.ssh/target_key
 
-      - name: Test source VM connection
+      - name: Test source VM SSH connection
         run: |
           ssh \
             -i ~/.ssh/source_key \
             -o StrictHostKeyChecking=no \
             -o ConnectTimeout=15 \
-            "$azureuser@$SOURCE_VM_IP" \
-            "echo 'Successfully connected to source VM'"
+            "$SOURCE_VM_USER@$SOURCE_VM_IP" \
+            "echo 'Successfully connected to source VM as $(whoami)'"
 
-      - name: Test target VM connection
+      - name: Test target VM SSH connection
         run: |
           ssh \
             -i ~/.ssh/target_key \
             -o StrictHostKeyChecking=no \
             -o ConnectTimeout=15 \
-            "$azureuser@$TARGET_VM_IP" \
-            "echo 'Successfully connected to target VM'"
+            "$TARGET_VM_USER@$TARGET_VM_IP" \
+            "echo 'Successfully connected to target VM as $(whoami)'"
 
-      - name: Create archive on source VM
+      - name: Create application archive on source VM
         run: |
           ssh \
             -i ~/.ssh/source_key \
             -o StrictHostKeyChecking=no \
-            "$azureuser@$SOURCE_VM_IP" \
+            "$SOURCE_VM_USER@$SOURCE_VM_IP" \
             "sudo test -d /var/www/html &&
              sudo rm -f /tmp/nginx-site.tar.gz &&
              sudo tar -czf /tmp/nginx-site.tar.gz -C /var/www html &&
-             sudo chown $azureuser:$azureuser /tmp/nginx-site.tar.gz &&
+             sudo chown $SOURCE_VM_USER:$SOURCE_VM_USER /tmp/nginx-site.tar.gz &&
              ls -lh /tmp/nginx-site.tar.gz"
 
-      - name: Download archive from source VM
+      - name: Download application archive
         run: |
           scp \
             -i ~/.ssh/source_key \
             -o StrictHostKeyChecking=no \
-            "$azureuser@$SOURCE_VM_IP:/tmp/nginx-site.tar.gz" \
+            "$SOURCE_VM_USER@$SOURCE_VM_IP:/tmp/nginx-site.tar.gz" \
             ./nginx-site.tar.gz
 
           test -s ./nginx-site.tar.gz
+          echo "Application archive downloaded successfully."
           ls -lh ./nginx-site.tar.gz
 
-      - name: Upload archive to target VM
+      - name: Validate downloaded archive
+        run: |
+          tar -tzf ./nginx-site.tar.gz > /dev/null
+          echo "Archive validation completed successfully."
+
+      - name: Upload application archive to target VM
         run: |
           scp \
             -i ~/.ssh/target_key \
             -o StrictHostKeyChecking=no \
             ./nginx-site.tar.gz \
-            "$azureuser@$TARGET_VM_IP:/tmp/nginx-site.tar.gz"
+            "$TARGET_VM_USER@$TARGET_VM_IP:/tmp/nginx-site.tar.gz"
 
       - name: Install Nginx and deploy application
         run: |
           ssh \
             -i ~/.ssh/target_key \
             -o StrictHostKeyChecking=no \
-            "$azureuser@$TARGET_VM_IP" << 'EOF'
+            "$TARGET_VM_USER@$TARGET_VM_IP" << 'EOF'
           set -e
 
           export DEBIAN_FRONTEND=noninteractive
 
+          echo "Checking Nginx installation..."
+
           if ! command -v nginx >/dev/null 2>&1; then
+            echo "Installing Nginx..."
             sudo apt-get update
             sudo apt-get install -y nginx
+          else
+            echo "Nginx is already installed."
           fi
 
-          test -s /tmp/nginx-site.tar.gz
+          if [ ! -s /tmp/nginx-site.tar.gz ]; then
+            echo "Application archive is missing or empty."
+            exit 1
+          fi
+
+          echo "Creating backup of existing website..."
 
           if [ -d /var/www/html ]; then
             sudo rm -rf /var/www/html.backup
             sudo cp -a /var/www/html /var/www/html.backup
           fi
+
+          echo "Deploying application..."
 
           sudo rm -rf /var/www/html
           sudo tar -xzf /tmp/nginx-site.tar.gz -C /var/www
@@ -135,52 +159,79 @@ jobs:
           sudo find /var/www/html -type d -exec chmod 755 {} \;
           sudo find /var/www/html -type f -exec chmod 644 {} \;
 
+          echo "Validating Nginx configuration..."
+
           sudo nginx -t
           sudo systemctl enable nginx
           sudo systemctl restart nginx
-          sudo systemctl is-active --quiet nginx
 
-          echo "Application deployed successfully."
+          if ! sudo systemctl is-active --quiet nginx; then
+            echo "Nginx failed to start."
+            sudo systemctl status nginx --no-pager
+            exit 1
+          fi
+
+          echo "Application deployed successfully on target VM."
           EOF
 
-      - name: Verify target application
+      - name: Verify application from target VM
+        run: |
+          ssh \
+            -i ~/.ssh/target_key \
+            -o StrictHostKeyChecking=no \
+            "$TARGET_VM_USER@$TARGET_VM_IP" \
+            "curl --fail --silent --show-error http://localhost"
+
+          echo
+          echo "Internal application verification succeeded."
+
+      - name: Verify application using public IP
         run: |
           for attempt in 1 2 3 4 5; do
+            echo "Public verification attempt: $attempt"
+
             if curl \
               --fail \
               --silent \
               --show-error \
               --connect-timeout 10 \
+              --max-time 20 \
               "http://$TARGET_VM_IP"; then
               echo
-              echo "Migration completed successfully."
+              echo "Migration and public verification completed successfully."
               exit 0
             fi
 
-            echo "Verification attempt $attempt failed."
             sleep 5
           done
 
-          echo "Application verification failed."
-          echo "Ensure TCP port 80 is allowed in the target VM Azure NSG."
+          echo "Public application verification failed."
+          echo "Check that inbound TCP port 80 is allowed in the target VM Azure NSG."
           exit 1
 
-      - name: Clean up
+      - name: Clean up temporary files
         if: always()
         run: |
-          ssh \
-            -i ~/.ssh/source_key \
-            -o StrictHostKeyChecking=no \
-            -o ConnectTimeout=5 \
-            "$azureuser@$SOURCE_VM_IP" \
-            "sudo rm -f /tmp/nginx-site.tar.gz" 2>/dev/null || true
+          if [ -f ~/.ssh/source_key ]; then
+            ssh \
+              -i ~/.ssh/source_key \
+              -o StrictHostKeyChecking=no \
+              -o ConnectTimeout=5 \
+              "$SOURCE_VM_USER@$SOURCE_VM_IP" \
+              "sudo rm -f /tmp/nginx-site.tar.gz" 2>/dev/null || true
+          fi
 
-          ssh \
-            -i ~/.ssh/target_key \
-            -o StrictHostKeyChecking=no \
-            -o ConnectTimeout=5 \
-            "$azureuser@$TARGET_VM_IP" \
-            "sudo rm -f /tmp/nginx-site.tar.gz" 2>/dev/null || true
+          if [ -f ~/.ssh/target_key ]; then
+            ssh \
+              -i ~/.ssh/target_key \
+              -o StrictHostKeyChecking=no \
+              -o ConnectTimeout=5 \
+              "$TARGET_VM_USER@$TARGET_VM_IP" \
+              "sudo rm -f /tmp/nginx-site.tar.gz" 2>/dev/null || true
+          fi
 
           rm -f ./nginx-site.tar.gz
-          rm -f ~/.ssh/source_key ~/.ssh/target_key
+          rm -f ~/.ssh/source_key
+          rm -f ~/.ssh/target_key
+
+          echo "Temporary files removed."
