@@ -9,8 +9,6 @@ jobs:
     timeout-minutes: 20
 
     env:
-      azureuser: azureuser
-      azureuser: azureuser
       SOURCE_VM_IP: ${{ secrets.SOURCE_VM_IP }}
       TARGET_VM_IP: ${{ secrets.TARGET_VM_IP }}
 
