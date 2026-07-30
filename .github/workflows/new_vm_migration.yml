@@ -1,4 +1,4 @@
-name: Migrate Application
+name: Migrate Nginx Application
 
 on:
   workflow_dispatch:
@@ -6,59 +6,197 @@ on:
 jobs:
   migrate:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     steps:
-      - name: Configure SSH Keys
+      - name: Validate required secrets
+        env:
+          SOURCE_VM_IP: ${{ secrets.SOURCE_VM_IP }}
+          TARGET_VM_IP: ${{ secrets.TARGET_VM_IP }}
+          SOURCE_VM_SSH_KEY: ${{ secrets.SOURCE_VM_SSH_KEY }}
+          TARGET_VM_SSH_KEY: ${{ secrets.TARGET_VM_SSH_KEY }}
+        run: |
+          if [ -z "$SOURCE_VM_IP" ]; then
+            echo "SOURCE_VM_IP secret is missing"
+            exit 1
+          fi
+
+          if [ -z "$TARGET_VM_IP" ]; then
+            echo "TARGET_VM_IP secret is missing"
+            exit 1
+          fi
+
+          if [ -z "$SOURCE_VM_SSH_KEY" ]; then
+            echo "SOURCE_VM_SSH_KEY secret is missing"
+            exit 1
+          fi
+
+          if [ -z "$TARGET_VM_SSH_KEY" ]; then
+            echo "TARGET_VM_SSH_KEY secret is missing"
+            exit 1
+          fi
+
+          echo "All required secrets are configured."
+
+      - name: Configure SSH keys
+        env:
+          SOURCE_VM_SSH_KEY: ${{ secrets.SOURCE_VM_SSH_KEY }}
+          TARGET_VM_SSH_KEY: ${{ secrets.TARGET_VM_SSH_KEY }}
         run: |
           mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
 
-          echo "${{ secrets.SOURCE_VM_SSH_KEY }}" > ~/.ssh/source_key
+          printf '%s\n' "$SOURCE_VM_SSH_KEY" \
+            | tr -d '\r' > ~/.ssh/source_key
+
+          printf '%s\n' "$TARGET_VM_SSH_KEY" \
+            | tr -d '\r' > ~/.ssh/target_key
+
           chmod 600 ~/.ssh/source_key
-
-          echo "${{ secrets.TARGET_VM_SSH_KEY }}" > ~/.ssh/target_key
           chmod 600 ~/.ssh/target_key
 
-      - name: Create backup on Source VM
+      - name: Test SSH connection to source VM
+        env:
+          SOURCE_VM_IP: ${{ secrets.SOURCE_VM_IP }}
         run: |
-          ssh -i ~/.ssh/source_key \
-          -o StrictHostKeyChecking=no \
-          root@${{ vars.SOURCE_VM_IP }} \
-          "tar -czf /tmp/nginx-site.tar.gz /var/www/html"
+          ssh \
+            -i ~/.ssh/source_key \
+            -o StrictHostKeyChecking=no \
+            -o ConnectTimeout=15 \
+            "root@$SOURCE_VM_IP" \
+            "echo 'Successfully connected to source VM'"
 
-      - name: Download backup from Source VM
+      - name: Test SSH connection to target VM
+        env:
+          TARGET_VM_IP: ${{ secrets.TARGET_VM_IP }}
         run: |
-          scp -i ~/.ssh/source_key \
-          -o StrictHostKeyChecking=no \
-          root@${{ vars.SOURCE_VM_IP }}:/tmp/nginx-site.tar.gz \
-          ./nginx-site.tar.gz
+          ssh \
+            -i ~/.ssh/target_key \
+            -o StrictHostKeyChecking=no \
+            -o ConnectTimeout=15 \
+            "root@$TARGET_VM_IP" \
+            "echo 'Successfully connected to target VM'"
 
-      - name: Upload backup to Target VM
+      - name: Create application archive on source VM
+        env:
+          SOURCE_VM_IP: ${{ secrets.SOURCE_VM_IP }}
         run: |
-          scp -i ~/.ssh/target_key \
-          -o StrictHostKeyChecking=no \
-          ./nginx-site.tar.gz \
-          root@${{ vars.TARGET_VM_IP }}:/tmp/
+          ssh \
+            -i ~/.ssh/source_key \
+            -o StrictHostKeyChecking=no \
+            "root@$SOURCE_VM_IP" \
+            "test -d /var/www/html &&
+             rm -f /tmp/nginx-site.tar.gz &&
+             tar -czf /tmp/nginx-site.tar.gz -C /var/www html &&
+             ls -lh /tmp/nginx-site.tar.gz"
 
-      - name: Deploy on Target VM
+      - name: Download archive from source VM
+        env:
+          SOURCE_VM_IP: ${{ secrets.SOURCE_VM_IP }}
         run: |
-          ssh -i ~/.ssh/target_key \
-          -o StrictHostKeyChecking=no \
-          root@${{ vars.TARGET_VM_IP }} << EOF
+          scp \
+            -i ~/.ssh/source_key \
+            -o StrictHostKeyChecking=no \
+            "root@$SOURCE_VM_IP:/tmp/nginx-site.tar.gz" \
+            "./nginx-site.tar.gz"
 
-          apt-get update
+          test -s ./nginx-site.tar.gz
+          ls -lh ./nginx-site.tar.gz
 
-          if ! dpkg -s nginx >/dev/null 2>&1; then
+      - name: Upload archive to target VM
+        env:
+          TARGET_VM_IP: ${{ secrets.TARGET_VM_IP }}
+        run: |
+          scp \
+            -i ~/.ssh/target_key \
+            -o StrictHostKeyChecking=no \
+            "./nginx-site.tar.gz" \
+            "root@$TARGET_VM_IP:/tmp/nginx-site.tar.gz"
+
+      - name: Install Nginx and deploy application
+        env:
+          TARGET_VM_IP: ${{ secrets.TARGET_VM_IP }}
+        run: |
+          ssh \
+            -i ~/.ssh/target_key \
+            -o StrictHostKeyChecking=no \
+            "root@$TARGET_VM_IP" << 'EOF'
+          set -e
+
+          export DEBIAN_FRONTEND=noninteractive
+
+          if ! command -v nginx >/dev/null 2>&1; then
+            apt-get update
             apt-get install -y nginx
           fi
 
-          rm -rf /var/www/html/*
-          tar -xzf /tmp/nginx-site.tar.gz -C /
+          test -s /tmp/nginx-site.tar.gz
 
+          if [ -d /var/www/html ]; then
+            rm -rf /var/www/html.backup
+            cp -a /var/www/html /var/www/html.backup
+          fi
+
+          rm -rf /var/www/html
+          tar -xzf /tmp/nginx-site.tar.gz -C /var/www
+
+          chown -R www-data:www-data /var/www/html
+          find /var/www/html -type d -exec chmod 755 {} \;
+          find /var/www/html -type f -exec chmod 644 {} \;
+
+          nginx -t
           systemctl enable nginx
           systemctl restart nginx
+          systemctl is-active --quiet nginx
 
+          echo "Application successfully deployed on target VM."
           EOF
 
-      - name: Validate Deployment
+      - name: Verify application on target VM
+        env:
+          TARGET_VM_IP: ${{ secrets.TARGET_VM_IP }}
         run: |
-          curl http://${{ vars.TARGET_VM_IP }}
+          echo "Testing application on target VM..."
+
+          for attempt in 1 2 3 4 5; do
+            if curl \
+              --fail \
+              --silent \
+              --show-error \
+              --connect-timeout 10 \
+              "http://$TARGET_VM_IP"; then
+              echo
+              echo "Migration and validation completed successfully."
+              exit 0
+            fi
+
+            echo "Attempt $attempt failed. Retrying..."
+            sleep 5
+          done
+
+          echo "Application validation failed."
+          echo "Check whether TCP port 80 is allowed in the target VM's Azure NSG."
+          exit 1
+
+      - name: Clean up temporary files
+        if: always()
+        env:
+          SOURCE_VM_IP: ${{ secrets.SOURCE_VM_IP }}
+          TARGET_VM_IP: ${{ secrets.TARGET_VM_IP }}
+        run: |
+          rm -f ./nginx-site.tar.gz
+          rm -f ~/.ssh/source_key ~/.ssh/target_key
+
+          ssh \
+            -i ~/.ssh/source_key \
+            -o StrictHostKeyChecking=no \
+            -o ConnectTimeout=5 \
+            "root@$SOURCE_VM_IP" \
+            "rm -f /tmp/nginx-site.tar.gz" 2>/dev/null || true
+
+          ssh \
+            -i ~/.ssh/target_key \
+            -o StrictHostKeyChecking=no \
+            -o ConnectTimeout=5 \
+            "root@$TARGET_VM_IP" \
+            "rm -f /tmp/nginx-site.tar.gz" 2>/dev/null || true
